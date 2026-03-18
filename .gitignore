@@ -34,3 +34,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Personal health data — never commit the SQLite database
+/data/health.db
+/data/health.db-shm
+/data/health.db-wal
+health.db
+*.swp
