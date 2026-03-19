@@ -54,23 +54,28 @@ export function computeTagImpact(tagCode: string, daysBefore = 1, daysAfter = 3,
   let tagDays: { day: string }[]
 
   if (workoutType && !isWorkoutTag) {
-    // Strip 'workout_' prefix if present — DB stores bare activity_type values (e.g. 'running')
+    // Intersection: days where lifestyle tag AND workout type both occurred (Garmin OR Oura)
     const activityType = workoutType.replace(/^workout_/, '')
-    // Intersection: days where lifestyle tag AND workout type both occurred
-    tagDays = db.prepare(`
+    const garminDays = db.prepare(`
       SELECT DISTINCT ot.start_day AS day
       FROM oura_tags ot
       JOIN garmin_activities ga ON ga.start_day = ot.start_day
       WHERE ot.tag_text = ? AND ga.activity_type = ?
-      ORDER BY ot.start_day
     `).all(tagCode, activityType) as { day: string }[]
+    const ouraDays = db.prepare(`
+      SELECT DISTINCT ot.start_day AS day
+      FROM oura_tags ot
+      JOIN oura_workouts ow ON ow.day = ot.start_day
+      WHERE ot.tag_text = ? AND ow.activity = ?
+    `).all(tagCode, activityType) as { day: string }[]
+    const merged = Array.from(new Set([...garminDays.map(d => d.day), ...ouraDays.map(d => d.day)])).sort()
+    tagDays = merged.map(day => ({ day }))
   } else if (isWorkoutTag) {
-    tagDays = db.prepare(`
-        SELECT DISTINCT start_day AS day
-        FROM garmin_activities
-        WHERE activity_type = ?
-        ORDER BY start_day
-      `).all(tagCode.replace('workout_', '')) as { day: string }[]
+    const actType = tagCode.replace('workout_', '')
+    const garminDays = db.prepare(`SELECT DISTINCT start_day AS day FROM garmin_activities WHERE activity_type = ?`).all(actType) as { day: string }[]
+    const ouraDays = db.prepare(`SELECT DISTINCT day FROM oura_workouts WHERE activity = ?`).all(actType) as { day: string }[]
+    const merged = Array.from(new Set([...garminDays.map(d => d.day), ...ouraDays.map(d => d.day)])).sort()
+    tagDays = merged.map(day => ({ day }))
   } else {
     tagDays = db.prepare(`
         SELECT DISTINCT start_day as day FROM oura_tags WHERE tag_text = ? ORDER BY start_day

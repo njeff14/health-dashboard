@@ -20,13 +20,29 @@ export async function GET(req: NextRequest) {
       GROUP BY tag_text ORDER BY count DESC
     `).all() as { tag_text: string; count: number }[]
 
-    // Workout type tags
-    const workoutTags = db.prepare(`
+    // Workout type tags — merge Garmin + Oura, summing counts for shared activity types
+    const garminWorkoutTags = db.prepare(`
       SELECT 'workout_' || activity_type as tag_text, COUNT(*) as count
       FROM garmin_activities
       WHERE activity_type IS NOT NULL AND activity_type != ''
       GROUP BY activity_type ORDER BY count DESC
     `).all() as { tag_text: string; count: number }[]
+
+    const ouraWorkoutTags = db.prepare(`
+      SELECT 'workout_' || activity as tag_text, COUNT(*) as count
+      FROM oura_workouts
+      WHERE activity IS NOT NULL AND activity != ''
+      GROUP BY activity ORDER BY count DESC
+    `).all() as { tag_text: string; count: number }[]
+
+    // Merge by tag_text, summing counts
+    const workoutCountMap = new Map<string, number>()
+    for (const t of [...garminWorkoutTags, ...ouraWorkoutTags]) {
+      workoutCountMap.set(t.tag_text, (workoutCountMap.get(t.tag_text) ?? 0) + t.count)
+    }
+    const workoutTags = Array.from(workoutCountMap.entries())
+      .map(([tag_text, count]) => ({ tag_text, count }))
+      .sort((a, b) => b.count - a.count)
 
     const dynamicTags = [...ouraTags, ...workoutTags].map(t => tagMetric(t.tag_text, t.count))
 

@@ -180,6 +180,31 @@ export async function syncOura(startDate: string, endDate: string) {
     counts.tags = rows.length
   } catch (e) { counts.tags_error = 1; console.error('tags sync error', e) }
 
+  // Workouts
+  try {
+    const rows = await fetchAll('workout', startDate, endDate)
+    const upsert = db.prepare(`
+      INSERT OR REPLACE INTO oura_workouts
+        (id, day, activity, start_time, end_time, duration_sec,
+         calories, distance_meters, average_hr, max_hr, intensity, source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    const run = db.transaction((items: Record<string, unknown>[]) => {
+      for (const r of items) {
+        const start = r.start_datetime as string | null
+        const end = r.end_datetime as string | null
+        const durationSec = start && end
+          ? (new Date(end).getTime() - new Date(start).getTime()) / 1000
+          : null
+        upsert.run(r.id, r.day, r.activity, start, end, durationSec,
+          r.calories, r.distance, r.average_heart_rate, r.max_heart_rate,
+          r.intensity, r.source)
+      }
+    })
+    run(rows)
+    counts.workouts = rows.length
+  } catch (e) { counts.workouts_error = 1; console.error('workouts sync error', e) }
+
   // SpO2
   try {
     const rows = await fetchAll('daily_spo2', startDate, endDate)

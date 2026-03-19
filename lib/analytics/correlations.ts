@@ -2,6 +2,7 @@ import { getDb } from '@/lib/db'
 import { computeDailyBodyBattery } from '@/lib/analytics/bodyBattery'
 import { computeVO2maxEstimates } from '@/lib/analytics/vo2maxEstimator'
 import { isTagMetric, getTagText, needsWorkoutJoin } from '@/lib/analytics/metricPool'
+import { estimateWorkoutMetrics } from '@/lib/analytics/workoutEstimator'
 
 /** Add one calendar day to a YYYY-MM-DD string using local time (avoids UTC shift). */
 function localAddDay(dateStr: string): string {
@@ -121,7 +122,9 @@ function buildDayMap(startDate: string, endDate: string, tagIds: string[]): Map<
     let days: { day: string }[]
     if (isWorkout) {
       const actType = tagText.replace('workout_', '')
-      days = db.prepare('SELECT DISTINCT start_day as day FROM garmin_activities WHERE activity_type = ?').all(actType) as { day: string }[]
+      const garminDays = db.prepare('SELECT DISTINCT start_day as day FROM garmin_activities WHERE activity_type = ?').all(actType) as { day: string }[]
+      const ouraDays = db.prepare('SELECT DISTINCT day FROM oura_workouts WHERE activity = ?').all(actType) as { day: string }[]
+      days = Array.from(new Set([...garminDays.map(d => d.day), ...ouraDays.map(d => d.day)])).map(day => ({ day }))
     } else {
       days = db.prepare('SELECT DISTINCT start_day as day FROM oura_tags WHERE tag_text = ?').all(tagText) as { day: string }[]
     }
@@ -159,26 +162,48 @@ function buildDayMap(startDate: string, endDate: string, tagIds: string[]): Map<
 
 function buildWorkoutRows(startDate: string, endDate: string, activityType?: string): WorkoutData[] {
   const db = getDb()
-  let query = `
+
+  // Garmin activities
+  let garminQuery = `
     SELECT start_day as day, activity_type, training_effect_label,
            average_hr, aerobic_training_effect, anaerobic_training_effect,
            calories, duration_sec, vo2max
     FROM garmin_activities
     WHERE start_day BETWEEN ? AND ?
   `
-  const params: unknown[] = [startDate, endDate]
+  const garminParams: unknown[] = [startDate, endDate]
   if (activityType) {
-    query += ' AND activity_type = ?'
-    params.push(activityType)
+    garminQuery += ' AND activity_type = ?'
+    garminParams.push(activityType)
   }
-  query += ' ORDER BY start_day'
-
-  const rows = db.prepare(query).all(...params) as {
+  const garminRows = db.prepare(garminQuery).all(...garminParams) as {
     day: string; activity_type: string; training_effect_label: string | null
     average_hr: number | null; aerobic_training_effect: number | null
     anaerobic_training_effect: number | null; calories: number | null
     duration_sec: number | null; vo2max: number | null
   }[]
+
+  // Oura workouts
+  let ouraQuery = `
+    SELECT day, activity as activity_type, NULL as training_effect_label,
+           average_hr, NULL as aerobic_training_effect, NULL as anaerobic_training_effect,
+           calories, duration_sec, NULL as vo2max
+    FROM oura_workouts
+    WHERE day BETWEEN ? AND ?
+  `
+  const ouraParams: unknown[] = [startDate, endDate]
+  if (activityType) {
+    ouraQuery += ' AND activity = ?'
+    ouraParams.push(activityType)
+  }
+  const ouraRows = db.prepare(ouraQuery).all(...ouraParams) as {
+    day: string; activity_type: string; training_effect_label: string | null
+    average_hr: number | null; aerobic_training_effect: number | null
+    anaerobic_training_effect: number | null; calories: number | null
+    duration_sec: number | null; vo2max: number | null
+  }[]
+
+  const rows = [...garminRows, ...ouraRows].sort((a, b) => a.day.localeCompare(b.day))
 
   // Estimated VO2max
   const vo2Result = computeVO2maxEstimates(startDate, endDate)
@@ -186,18 +211,39 @@ function buildWorkoutRows(startDate: string, endDate: string, activityType?: str
     vo2Result.series.map(d => [d.day, d.actual_vo2max ?? d.estimated_vo2max])
   )
 
-  return rows.map(r => ({
-    day: r.day,
-    activity_type: r.activity_type,
-    training_effect_label: r.training_effect_label,
-    average_hr: r.average_hr,
-    aerobic_training_effect: r.aerobic_training_effect,
-    anaerobic_training_effect: r.anaerobic_training_effect,
-    calories: r.calories,
-    duration_min: r.duration_sec != null ? r.duration_sec / 60 : null,
-    vo2max: r.vo2max,
-    estimated_vo2max: vo2Map.get(r.day) ?? null,
-  }))
+  // User HR settings for workout metric estimation
+  const settings = db.prepare(`SELECT key, value FROM user_settings WHERE key IN ('hr_max','hr_resting')`).all() as { key: string; value: string }[]
+  const hrMax     = parseInt(settings.find(s => s.key === 'hr_max')?.value     ?? '190')
+  const hrResting = parseInt(settings.find(s => s.key === 'hr_resting')?.value ?? '60')
+
+  return rows.map(r => {
+    const durationMin = r.duration_sec != null ? r.duration_sec / 60 : null
+
+    // Apply estimator only when Garmin TE fields are absent (Oura-sourced rows)
+    const needsEstimate = r.aerobic_training_effect == null && r.average_hr != null && durationMin != null
+    const estimate = needsEstimate
+      ? estimateWorkoutMetrics({
+          avgHr: r.average_hr!,
+          maxHr: hrMax,
+          restingHr: hrResting,
+          durationMin: durationMin!,
+          intensity: (r as { intensity?: string | null }).intensity ?? null,
+        })
+      : null
+
+    return {
+      day: r.day,
+      activity_type: r.activity_type,
+      training_effect_label: r.training_effect_label ?? estimate?.training_effect_label ?? null,
+      average_hr: r.average_hr,
+      aerobic_training_effect:  r.aerobic_training_effect  ?? estimate?.aerobic_training_effect  ?? null,
+      anaerobic_training_effect: r.anaerobic_training_effect ?? estimate?.anaerobic_training_effect ?? null,
+      calories: r.calories,
+      duration_min: durationMin,
+      vo2max: r.vo2max,
+      estimated_vo2max: vo2Map.get(r.day) ?? null,
+    }
+  })
 }
 
 // ---------- unified correlation builder ----------

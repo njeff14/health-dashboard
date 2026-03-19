@@ -137,6 +137,25 @@ export function runMigrations(db: Database.Database) {
       created_at                TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS oura_workouts (
+      id              TEXT PRIMARY KEY,
+      day             TEXT NOT NULL,
+      activity        TEXT,
+      start_time      TEXT,
+      end_time        TEXT,
+      duration_sec    REAL,
+      calories        INTEGER,
+      distance_meters REAL,
+      average_hr      INTEGER,
+      max_hr          INTEGER,
+      intensity       TEXT,
+      source          TEXT,
+      created_at      TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_oura_workouts_day      ON oura_workouts(day);
+    CREATE INDEX IF NOT EXISTS idx_oura_workouts_activity ON oura_workouts(activity);
+
     CREATE INDEX IF NOT EXISTS idx_oura_sleep_day           ON oura_sleep(day);
     CREATE INDEX IF NOT EXISTS idx_oura_daily_sleep_day     ON oura_daily_sleep(day);
     CREATE INDEX IF NOT EXISTS idx_oura_daily_readiness_day ON oura_daily_readiness(day);
