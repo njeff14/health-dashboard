@@ -13,7 +13,7 @@ export interface DailyBodyBattery {
   stress_weight: number | null
 }
 
-const TR_WEIGHTS = { hrv: 0.40, rhr: 0.30, recovery: 0.20, prev_night: 0.10 }
+const TR_WEIGHTS = { hrv: 0.25, rhr: 0.35, recovery: 0.20, prev_night: 0.20 }
 
 function calcTrainingReadiness(
   hrv: number | null,
