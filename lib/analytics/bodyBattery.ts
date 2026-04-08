@@ -7,12 +7,41 @@ export interface DailyBodyBattery {
   day: string
   body_battery: number | null
   readiness: number | null
+  training_readiness: number | null
   atl_norm: number | null
   recovery_ratio: number | null
   stress_weight: number | null
 }
 
-interface ReadinessRow { day: string; score: number | null }
+const TR_WEIGHTS = { hrv: 0.40, rhr: 0.30, recovery: 0.20, prev_night: 0.10 }
+
+function calcTrainingReadiness(
+  hrv: number | null,
+  rhr: number | null,
+  recovery: number | null,
+  prevNight: number | null,
+): number | null {
+  const vals: [number | null, number][] = [
+    [hrv,      TR_WEIGHTS.hrv],
+    [rhr,      TR_WEIGHTS.rhr],
+    [recovery, TR_WEIGHTS.recovery],
+    [prevNight, TR_WEIGHTS.prev_night],
+  ]
+  const valid = vals.filter(([v]) => v != null) as [number, number][]
+  if (!valid.length) return null
+  const totalWeight = valid.reduce((s, [, w]) => s + w, 0)
+  const raw = valid.reduce((s, [v, w]) => s + v * (w / totalWeight), 0)
+  return Math.round(Math.max(0, Math.min(100, ((raw - 40) / 60) * 100)))
+}
+
+interface ReadinessRow {
+  day: string
+  score: number | null
+  contributor_hrv_balance: number | null
+  contributor_resting_heart_rate: number | null
+  contributor_recovery_index: number | null
+  contributor_previous_night: number | null
+}
 interface StressRow { day: string; stress_high: number | null; recovery_high: number | null }
 interface ActivityRow {
   start_day: string
@@ -56,7 +85,10 @@ export function computeDailyBodyBattery(startDate: string, endDate: string): Dai
   const atlLookbackStart = format(subDays(parseLocalDate(startDate), 21), 'yyyy-MM-dd')
 
   const readinessRows = db.prepare(`
-    SELECT day, score FROM oura_daily_readiness
+    SELECT day, score,
+           contributor_hrv_balance, contributor_resting_heart_rate,
+           contributor_recovery_index, contributor_previous_night
+    FROM oura_daily_readiness
     WHERE day BETWEEN ? AND ?
     ORDER BY day
   `).all(startDate, endDate) as ReadinessRow[]
@@ -143,6 +175,17 @@ export function computeDailyBodyBattery(startDate: string, endDate: string): Dai
     const dayActivities = activitiesByDay.get(day) || []
 
     const readinessScore = readiness?.score ?? null
+    const trainingReadiness = readiness
+      ? calcTrainingReadiness(
+          readiness.contributor_hrv_balance,
+          readiness.contributor_resting_heart_rate,
+          readiness.contributor_recovery_index,
+          readiness.contributor_previous_night,
+        )
+      : null
+    // Use training readiness for body battery; fall back to Oura readiness if contributors missing
+    const readinessForBB = trainingReadiness ?? readinessScore
+
     const atlRaw = rawATLs[i]
     const atlNorm = Math.min(100, (atlRaw / ATL_CAP) * 100)
 
@@ -162,8 +205,8 @@ export function computeDailyBodyBattery(startDate: string, endDate: string): Dai
       stressWeight = Math.max(0, (24 - workoutHours) / 24)
     }
 
-    if (readinessScore == null) {
-      results.push({ day, body_battery: null, readiness: null, atl_norm: null, recovery_ratio: null, stress_weight: null })
+    if (readinessForBB == null) {
+      results.push({ day, body_battery: null, readiness: readinessScore, training_readiness: null, atl_norm: null, recovery_ratio: null, stress_weight: null })
       continue
     }
 
@@ -171,12 +214,13 @@ export function computeDailyBodyBattery(startDate: string, endDate: string): Dai
       ? recoveryRatio * 100 * 0.20 * stressWeight
       : 10 * stressWeight // fallback: assume 50% recovery ratio
 
-    const bb = (readinessScore * 0.50) + ((100 - atlNorm) * 0.30) + recoveryComponent
+    const bb = (readinessForBB * 0.50) + ((100 - atlNorm) * 0.30) + recoveryComponent
 
     results.push({
       day,
       body_battery: Math.round(Math.min(100, Math.max(0, bb)) * 10) / 10,
       readiness: readinessScore,
+      training_readiness: trainingReadiness,
       atl_norm: Math.round(atlNorm * 10) / 10,
       recovery_ratio: recoveryRatio != null ? Math.round(recoveryRatio * 1000) / 1000 : null,
       stress_weight: Math.round(stressWeight * 100) / 100,

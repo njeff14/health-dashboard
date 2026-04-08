@@ -10,6 +10,7 @@ interface BatteryPoint {
   day: string
   body_battery: number | null
   readiness: number | null
+  training_readiness: number | null
   atl_norm: number | null
   recovery_ratio: number | null
   stress_weight: number | null
@@ -191,7 +192,7 @@ export default function ReadinessPage() {
       .filter(b => b.body_battery != null)
       .map(b => {
         const sw = b.stress_weight ?? 1
-        const readiness_contrib = (b.readiness ?? 0) * 0.50
+        const readiness_contrib = (b.training_readiness ?? b.readiness ?? 0) * 0.50
         const freshness_contrib = (100 - (b.atl_norm ?? 0)) * 0.30
         const recovery_contrib = b.recovery_ratio != null
           ? b.recovery_ratio * 100 * 0.20 * sw
@@ -526,7 +527,7 @@ export default function ReadinessPage() {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={((value: number, name: string) => {
                   const labels: Record<string, string> = {
-                    readiness_contrib: 'Readiness (50%)',
+                    readiness_contrib: 'Training Readiness (50%)',
                     freshness_contrib:  'Freshness (30%)',
                     recovery_contrib:   'Recovery (20%)',
                     body_battery:       'Body Battery',
@@ -537,7 +538,7 @@ export default function ReadinessPage() {
               <Legend
                 content={() => {
                   const items = [
-                    { key: 'readiness_contrib', color: '#10b981', label: 'Readiness (50%)', title: "Oura's composite recovery score — reflects HRV, resting heart rate, sleep quality, and body temperature." },
+                    { key: 'readiness_contrib', color: '#10b981', label: 'Training Readiness (50%)', title: "Custom training readiness score — weighted from HRV balance (40%), resting HR (30%), recovery index (20%), and previous night (10%). Linear-stretched to use the full 0–100 scale." },
                     { key: 'freshness_contrib',  color: '#8b5cf6', label: 'Freshness (30%)',  title: "Inverse of your recent training load (ATL) — high when you've had lighter training days, suppressed after heavy blocks." },
                     { key: 'recovery_contrib',   color: '#0ea5e9', label: 'Recovery (20%)',   title: "Oura's daily stress-to-recovery balance, discounted on workout days to avoid double-counting training stress." },
                     { key: 'body_battery',       color: '#f59e0b', label: 'Body Battery',     title: 'Weighted total of all three components, representing your overall daily energy and recovery capacity.' },
