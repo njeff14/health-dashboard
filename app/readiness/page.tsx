@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, Area,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell, ReferenceArea
 } from 'recharts'
 
 interface BatteryPoint {
@@ -21,17 +21,42 @@ interface Activity {
   average_hr: number; max_hr: number; aerobic_training_effect: number
   anaerobic_training_effect: number; training_effect_label: string; vo2max: number
 }
-interface Readiness { day: string; readiness_score: number; contributor_hrv_balance: number; contributor_recovery_index: number }
+interface Readiness {
+  day: string
+  readiness_score: number
+  contributor_hrv_balance: number
+  contributor_recovery_index: number
+  contributor_resting_heart_rate: number
+  contributor_previous_night: number
+}
 interface Sleep { day: string; sleep_score: number; average_hrv: number }
 
 interface DayData {
   day: string
   readiness: number | null
   hrv_balance: number | null
+  resting_hr_contrib: number | null
+  recovery_index: number | null
+  prev_night: number | null
   sleep_score: number | null
   average_hr: number | null
   aerobic_effect: number | null
   training_label: string | null
+}
+
+const DEFAULT_WEIGHTS = { hrv: 0.40, rhr: 0.30, recovery: 0.20, prev_night: 0.10 }
+
+function calcTrainingReadiness(
+  hrv: number | null, rhr: number | null, recovery: number | null, prevNight: number | null,
+  w: typeof DEFAULT_WEIGHTS
+): number | null {
+  const vals: [number | null, number][] = [[hrv, w.hrv], [rhr, w.rhr], [recovery, w.recovery], [prevNight, w.prev_night]]
+  const valid = vals.filter(([v]) => v != null) as [number, number][]
+  if (!valid.length) return null
+  const totalWeight = valid.reduce((s, [, wt]) => s + wt, 0)
+  const raw = valid.reduce((s, [v, wt]) => s + v * (wt / totalWeight), 0)
+  // Stretch from [40,100] → [0,100] to widen the range
+  return Math.round(Math.max(0, Math.min(100, ((raw - 40) / 60) * 100)))
 }
 
 const TE_ORDER = ['AEROBIC_BASE', 'TEMPO', 'LACTATE_THRESHOLD', 'SPEED', 'VO2MAX'] as const
@@ -79,6 +104,8 @@ export default function ReadinessPage() {
   const [teBuckets, setTEBuckets] = useState<TEBucket[]>([])
   const [vo2maxData, setVo2maxData] = useState<VO2maxPoint[]>([])
   const [vo2maxModel, setVo2maxModel] = useState<VO2maxModel | null>(null)
+  const [weights, setWeights] = useState(DEFAULT_WEIGHTS)
+  const [showWeights, setShowWeights] = useState(false)
 
   const load = useCallback(async () => {
     const [overviewRes, actRes, battRes, vo2Res] = await Promise.all([
@@ -111,7 +138,10 @@ export default function ReadinessPage() {
       return {
         day: r.day.slice(5),
         readiness: r.readiness_score,
-        hrv_balance: r.contributor_hrv_balance,
+        hrv_balance: r.contributor_hrv_balance ?? null,
+        resting_hr_contrib: r.contributor_resting_heart_rate ?? null,
+        recovery_index: r.contributor_recovery_index ?? null,
+        prev_night: r.contributor_previous_night ?? null,
         sleep_score: s?.sleep_score ?? null,
         average_hr: act?.average_hr ?? null,
         aerobic_effect: act?.aerobic_training_effect ?? null,
@@ -245,6 +275,87 @@ export default function ReadinessPage() {
           )}
         </div>
       </div>
+
+      {/* Training Readiness chart */}
+      {chartData.length > 0 && (
+        <div className="border rounded-lg p-4">
+          <div className="flex items-start justify-between mb-1">
+            <div>
+              <h2 className="text-sm font-semibold">Training Readiness</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Custom score using HRV, resting HR, recovery index, and previous night — stretched to full range</p>
+            </div>
+            <button
+              onClick={() => setShowWeights(v => !v)}
+              className="text-xs border rounded px-2 py-1 hover:bg-muted text-muted-foreground"
+            >
+              {showWeights ? 'Hide weights' : 'Tune weights'}
+            </button>
+          </div>
+
+          {showWeights && (
+            <div className="grid grid-cols-4 gap-4 my-3 p-3 bg-muted/20 rounded-lg text-xs">
+              {([
+                { key: 'hrv',       label: 'HRV Balance',     color: '#f59e0b' },
+                { key: 'rhr',       label: 'Resting HR',      color: '#ef4444' },
+                { key: 'recovery',  label: 'Recovery Index',  color: '#10b981' },
+                { key: 'prev_night',label: 'Previous Night',  color: '#6366f1' },
+              ] as { key: keyof typeof DEFAULT_WEIGHTS; label: string; color: string }[]).map(({ key, label, color }) => (
+                <div key={key}>
+                  <div className="flex justify-between mb-1">
+                    <span style={{ color }}>{label}</span>
+                    <span className="font-mono">{Math.round(weights[key] * 100)}%</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={100} step={5}
+                    value={Math.round(weights[key] * 100)}
+                    onChange={e => {
+                      const val = Number(e.target.value) / 100
+                      setWeights(prev => ({ ...prev, [key]: val }))
+                    }}
+                    className="w-full accent-current"
+                    style={{ accentColor: color }}
+                  />
+                </div>
+              ))}
+              <div className="col-span-4 text-center text-muted-foreground">
+                Total weight: {Math.round((weights.hrv + weights.rhr + weights.recovery + weights.prev_night) * 100)}%
+                {Math.abs(weights.hrv + weights.rhr + weights.recovery + weights.prev_night - 1) > 0.01 && (
+                  <span className="ml-2 text-amber-600">(will be normalized automatically)</span>
+                )}
+                <button onClick={() => setWeights(DEFAULT_WEIGHTS)} className="ml-3 underline hover:text-foreground">reset</button>
+              </div>
+            </div>
+          )}
+
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={chartData.map(d => ({
+              ...d,
+              training_readiness: calcTrainingReadiness(d.hrv_balance, d.resting_hr_contrib, d.recovery_index, d.prev_night, weights),
+            }))}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <XAxis dataKey="day" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={28} />
+              <Tooltip
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                formatter={((v: number, name: string) => [
+                  Math.round(v),
+                  name === 'training_readiness' ? 'Training Readiness' : "Oura Readiness"
+                ]) as any}
+              />
+              <ReferenceArea y1={65} y2={100} fill="#22c55e" fillOpacity={0.07} />
+              <ReferenceArea y1={50}  y2={65}  fill="#eab308" fillOpacity={0.10} />
+              <ReferenceArea y1={35}  y2={50}  fill="#f97316" fillOpacity={0.10} />
+              <ReferenceArea y1={0}   y2={35}  fill="#ef4444" fillOpacity={0.09} />
+              <Line type="monotone" dataKey="readiness" stroke="#94a3b8" strokeWidth={1.5} dot={false} name="readiness" strokeDasharray="4 2" connectNulls />
+              <Line type="monotone" dataKey="training_readiness" stroke="#f59e0b" strokeWidth={2} dot={false} name="training_readiness" connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-0.5 bg-amber-400" />Training Readiness (custom)</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-0.5 bg-slate-400 opacity-60" style={{borderTop: '2px dashed'}} />Oura Readiness</span>
+          </div>
+        </div>
+      )}
 
       {/* Timeline */}
       <div className="border rounded-lg p-4">
@@ -394,7 +505,15 @@ export default function ReadinessPage() {
       {batteryChartData.length > 0 && (<>
         {/* Body battery composition */}
         <div className="border rounded-lg p-4">
-          <h2 className="text-sm font-semibold mb-1">Body Battery — Component Breakdown</h2>
+          <div className="flex items-start justify-between mb-1">
+            <h2 className="text-sm font-semibold">Body Battery — Component Breakdown</h2>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 opacity-60" />65+ Ready</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-yellow-500 opacity-60" />50–65 Moderate</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-orange-500 opacity-60" />35–50 Caution</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500 opacity-60" />&lt;35 Rest</span>
+            </div>
+          </div>
           <p className="text-xs text-muted-foreground mb-4">
             Stacked bars show the weighted contribution of each component. The line is your total body battery.
           </p>
@@ -404,7 +523,8 @@ export default function ReadinessPage() {
               <XAxis dataKey="day" tick={{ fontSize: 10 }} interval={xInterval} />
               <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={28} />
               <Tooltip
-                formatter={(value: number, name: string) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                formatter={((value: number, name: string) => {
                   const labels: Record<string, string> = {
                     readiness_contrib: 'Readiness (50%)',
                     freshness_contrib:  'Freshness (30%)',
@@ -412,7 +532,7 @@ export default function ReadinessPage() {
                     body_battery:       'Body Battery',
                   }
                   return [value, labels[name] ?? name]
-                }}
+                }) as any}
               />
               <Legend
                 content={() => {
@@ -434,6 +554,11 @@ export default function ReadinessPage() {
                   )
                 }}
               />
+              {/* Training readiness zones */}
+              <ReferenceArea y1={65} y2={100} fill="#22c55e" fillOpacity={0.07} ifOverflow="hidden" />
+              <ReferenceArea y1={50}  y2={65}  fill="#eab308" fillOpacity={0.10} ifOverflow="hidden" />
+              <ReferenceArea y1={35}  y2={50}  fill="#f97316" fillOpacity={0.10} ifOverflow="hidden" />
+              <ReferenceArea y1={0}   y2={35}  fill="#ef4444" fillOpacity={0.09} ifOverflow="hidden" />
               <Bar dataKey="readiness_contrib" stackId="bb" fill="#10b981" opacity={0.75} name="readiness_contrib" />
               <Bar dataKey="freshness_contrib"  stackId="bb" fill="#8b5cf6" opacity={0.75} name="freshness_contrib" />
               <Bar dataKey="recovery_contrib"   stackId="bb" fill="#0ea5e9" opacity={0.75} name="recovery_contrib" />
@@ -455,11 +580,12 @@ export default function ReadinessPage() {
               <YAxis yAxisId="atl" domain={[0, 100]} tick={{ fontSize: 10 }} width={28} label={{ value: 'ATL', angle: -90, position: 'insideLeft', style: { fontSize: 9 } }} />
               <YAxis yAxisId="rec" orientation="right" domain={[0, 100]} tick={{ fontSize: 10 }} width={36} label={{ value: 'Recovery %', angle: 90, position: 'insideRight', style: { fontSize: 9 } }} />
               <Tooltip
-                formatter={(value: number, name: string) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                formatter={((value: number, name: string) => {
                   if (name === 'atl_norm') return [`${value}`, 'Training Load (ATL norm)']
                   if (name === 'recovery_pct') return [`${value}%`, 'Oura Recovery %']
                   return [value, name]
-                }}
+                }) as any}
               />
               <Legend
                 formatter={(value) =>

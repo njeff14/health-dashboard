@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
 
   // Get previous day's body battery as starting level
   const prevBB = computeDailyBodyBattery(prevDayStr, prevDayStr)
-  let startingBattery = prevBB.length > 0 && prevBB[0].body_battery > 0
+  let startingBattery = prevBB.length > 0 && prevBB[0].body_battery != null && prevBB[0].body_battery > 0
     ? prevBB[0].body_battery
     : 50 // fallback
 

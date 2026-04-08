@@ -13,12 +13,36 @@ export async function GET(req: NextRequest) {
   if (params.get('list') === 'true') {
     const db = getDb()
 
-    // Oura lifestyle tags
-    const ouraTags = db.prepare(`
-      SELECT tag_text, COUNT(*) as count
+    // Oura lifestyle tags — expand multi-day tags to count days, not raw entries
+    const rawTagRows = db.prepare(`
+      SELECT tag_text, start_day, end_day
       FROM oura_tags WHERE tag_text IS NOT NULL
-      GROUP BY tag_text ORDER BY count DESC
-    `).all() as { tag_text: string; count: number }[]
+      ORDER BY tag_text
+    `).all() as { tag_text: string; start_day: string; end_day: string | null }[]
+
+    const parseLocal = (s: string) => { const [y,m,d] = s.split('-').map(Number); return new Date(y,m-1,d) }
+    const countDays = (rows: { start_day: string; end_day: string | null }[]) => {
+      const days = new Set<string>()
+      for (const r of rows) {
+        const end = r.end_day ? parseLocal(r.end_day) : parseLocal(r.start_day)
+        let cur = parseLocal(r.start_day)
+        while (cur <= end) {
+          const y = cur.getFullYear(), mo = cur.getMonth()+1, d = cur.getDate()
+          days.add(`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
+          cur = new Date(y, mo-1, d+1)
+        }
+      }
+      return days.size
+    }
+
+    const tagGroupMap = new Map<string, { start_day: string; end_day: string | null }[]>()
+    for (const r of rawTagRows) {
+      if (!tagGroupMap.has(r.tag_text)) tagGroupMap.set(r.tag_text, [])
+      tagGroupMap.get(r.tag_text)!.push(r)
+    }
+    const ouraTags = Array.from(tagGroupMap.entries())
+      .map(([tag_text, rows]) => ({ tag_text, count: countDays(rows) }))
+      .sort((a, b) => b.count - a.count)
 
     // Workout type tags — merge Garmin + Oura, summing counts for shared activity types
     const garminWorkoutTags = db.prepare(`
@@ -56,12 +80,14 @@ export async function GET(req: NextRequest) {
   const xId = params.get('x') ?? 'sleep_score'
   const yId = params.get('y') ?? 'average_hr'
   const activityType = params.get('type') || undefined
+  const excludeRaw = params.get('exclude')
+  const excludeTags = excludeRaw ? excludeRaw.split(',').filter(Boolean) : undefined
 
   const endDate = format(new Date(), 'yyyy-MM-dd')
   const startDate = format(subDays(new Date(), days), 'yyyy-MM-dd')
 
   try {
-    const result = buildCorrelationData(xId, yId, startDate, endDate, activityType)
+    const result = buildCorrelationData(xId, yId, startDate, endDate, activityType, excludeTags)
     return NextResponse.json({
       r: result.r,
       n: result.points.length,
